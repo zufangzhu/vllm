@@ -2576,7 +2576,7 @@ class MemorySnapshot:
     torch_peak: int = 0
     free_memory: int = 0
     total_memory: int = 0
-    cuda_memory: int = 0
+    used_memory: int = 0
     torch_memory: int = 0
     non_torch_memory: int = 0
     timestamp: float = 0.0
@@ -2586,24 +2586,49 @@ class MemorySnapshot:
         if self.auto_measure:
             self.measure()
 
+    # we provide this function due to `torch.xpu.mem_get_info()` doesn't
+    # return correct free_gpu_memory on intel client GPU. We need to
+    # calculate/estiamte it.
+    def xpu_get_mem_info(self, current_platform):
+        if current_platform.is_data_center_gpu():
+            return torch.xpu.mem_get_info()
+        else:
+            _, total_gpu_memory = torch.xpu.mem_get_info()
+            # FIXME: memory_allocated() doesn't count non-torch allocations,
+            # and we don't have any API to get it. so we mark it as 128MB.
+            used_memory = torch.xpu.memory_allocated()
+            non_torch_allocations = 128 * 1024 * 1024
+            free_gpu_memory = total_gpu_memory - (used_memory +
+                                                  non_torch_allocations)
+            return free_gpu_memory, total_gpu_memory
+
     def measure(self):
         # we measure the torch peak memory usage via allocated_bytes,
         # rather than `torch.cuda.memory_reserved()` .
         # After `torch.cuda.reset_peak_memory_stats()`,
         # `torch.cuda.memory_reserved()` will keep growing, and only shrink
         # when we call `torch.cuda.empty_cache()` or OOM happens.
-        self.torch_peak = torch.cuda.memory_stats().get(
-            "allocated_bytes.all.peak", 0)
+        from vllm.platforms import current_platform
 
-        self.free_memory, self.total_memory = torch.cuda.mem_get_info()
-        self.cuda_memory = self.total_memory - self.free_memory
+        if not current_platform.is_xpu():
+            self.torch_peak = torch.cuda.memory_stats().get(
+                "allocated_bytes.all.peak", 0
+            )
+            self.free_memory, self.total_memory = torch.cuda.mem_get_info()
 
-        # torch.cuda.memory_reserved() is how many bytes
-        # PyTorch gets from cuda (by calling cudaMalloc, etc.)
-        # this is used to measure the non-torch memory usage
-        self.torch_memory = torch.cuda.memory_reserved()
+            # torch.cuda.memory_reserved() is how many bytes
+            # PyTorch gets from cuda (by calling cudaMalloc, etc.)
+            # this is used to measure the non-torch memory usage
+            self.torch_memory = torch.cuda.memory_reserved()
+        else:
+            self.torch_peak = torch.xpu.memory_stats().get(
+                "allocated_bytes.all.peak", 0
+            )
+            self.free_memory, self.total_memory = self.xpu_get_mem_info(current_platform)
+            self.torch_memory = torch.xpu.memory_reserved()
 
-        self.non_torch_memory = self.cuda_memory - self.torch_memory
+        self.used_memory = self.total_memory - self.free_memory
+        self.non_torch_memory = self.used_memory - self.torch_memory
         self.timestamp = time.time()
 
     def __sub__(self, other: MemorySnapshot) -> MemorySnapshot:
@@ -2611,7 +2636,7 @@ class MemorySnapshot:
             torch_peak=self.torch_peak - other.torch_peak,
             free_memory=self.free_memory - other.free_memory,
             total_memory=self.total_memory - other.total_memory,
-            cuda_memory=self.cuda_memory - other.cuda_memory,
+            used_memory=self.used_memory - other.used_memory,
             torch_memory=self.torch_memory - other.torch_memory,
             non_torch_memory=self.non_torch_memory - other.non_torch_memory,
             timestamp=self.timestamp - other.timestamp,
@@ -2693,9 +2718,15 @@ def memory_profiling(
 
     The increase of `non_torch_memory` from creating the current vLLM instance until after profiling to get (c.).
     """  # noqa
-    gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
+    from vllm.platforms import current_platform
+
+    if not current_platform.is_xpu():
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+    else:
+        torch.xpu.empty_cache()
+        torch.xpu.reset_peak_memory_stats()
 
     result = MemoryProfilingResult()
 
@@ -2707,8 +2738,11 @@ def memory_profiling(
 
     yield result
 
-    gc.collect()
-    torch.cuda.empty_cache()
+    if not current_platform.is_xpu():
+        gc.collect()
+        torch.cuda.empty_cache()
+    else:
+        torch.xpu.empty_cache()
 
     result.after_profile.measure()
 

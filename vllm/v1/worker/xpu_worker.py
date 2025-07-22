@@ -11,6 +11,7 @@ from vllm.distributed import get_world_group
 from vllm.logger import init_logger
 from vllm.model_executor import set_random_seed
 from vllm.platforms import current_platform
+from vllm.utils import GiB_bytes, MemorySnapshot, memory_profiling
 from vllm.v1.worker.gpu_worker import (Worker,
                                        init_worker_distributed_environment)
 from vllm.v1.worker.xpu_model_runner import XPUModelRunner
@@ -52,22 +53,6 @@ class XPUWorker(Worker):
         else:
             self.profiler = None
 
-    # we provide this function due to `torch.xpu.mem_get_info()` doesn't
-    # return correct free_gpu_memory on intel client GPU. We need to
-    # calculate/estiamte it.
-    def xpu_get_mem_info(self):
-        if current_platform.is_data_center_gpu():
-            return torch.xpu.mem_get_info()
-        else:
-            _, total_gpu_memory = torch.xpu.mem_get_info()
-            # FIXME: memory_allocated() doesn't count non-torch allocations,
-            # and we don't have any API to get it. so we mark it as 128MB.
-            used_memory = torch.xpu.memory_allocated()
-            non_torch_allocations = 128 * 1024 * 1024
-            free_gpu_memory = total_gpu_memory - (used_memory +
-                                                  non_torch_allocations)
-            return free_gpu_memory, total_gpu_memory
-
     @torch.inference_mode()
     def determine_available_memory(self) -> int:
         """Profiles the peak memory usage of the model to determine how many
@@ -83,49 +68,40 @@ class XPUWorker(Worker):
         # cache blocks that can be allocated with the remaining free memory.
         torch.xpu.empty_cache()
         torch.xpu.reset_peak_memory_stats()
+        GiB = lambda b: b / GiB_bytes
 
-        free_gpu_memory, total_gpu_memory = torch.xpu.mem_get_info()
-        current_allocated_bytes = torch.xpu.memory_allocated()
-        msg = ("Before memory profiling run, "
-               f"total GPU memory: {total_gpu_memory / 1024**2:.2f} MB, "
-               f"model load takes {current_allocated_bytes / 1024**2:.2f} MB, "
-               f"free gpu memory is {free_gpu_memory / 1024**2:.2f} MB.")
-        logger.info(msg)
-        # Execute a forward pass with dummy inputs to profile the memory usage
-        # of the model.
-        self.model_runner.profile_run()
+        with memory_profiling(
+            self.init_snapshot, weights_memory=int(self.model_runner.model_memory_usage)
+        ) as profile_result:
+            self.model_runner.profile_run()
 
-        free_gpu_memory, _ = self.xpu_get_mem_info()
+        free_gpu_memory = profile_result.after_profile.free_memory
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
-        assert self.init_gpu_memory > free_gpu_memory, (
+        assert self.init_snapshot.free_memory > free_gpu_memory, (
             "Error in memory profiling. "
-            f"Initial free memory {self.init_gpu_memory}, current free memory"
-            f" {free_gpu_memory}. This happens when the GPU memory was "
-            "not properly cleaned up before initializing the vLLM instance.")
-
-        # Get the peak memory allocation recorded by torch
-        peak_memory = torch.xpu.memory_stats()["allocated_bytes.all.peak"]
-
-        torch.xpu.empty_cache()
-        torch_allocated_bytes = torch.xpu.memory_stats(
-        )["allocated_bytes.all.current"]
-        total_allocated_bytes = self.xpu_get_mem_info(
-        )[1] - self.xpu_get_mem_info()[0]
-
-        non_torch_allocations = total_allocated_bytes - torch_allocated_bytes
-        if non_torch_allocations > 0:
-            peak_memory += non_torch_allocations
+            f"Initial free memory {GiB(self.init_snapshot.free_memory)} GiB, "
+            f"current free memory {GiB(free_gpu_memory)} GiB. "
+            "This happens when other processes sharing the same container "
+            "release GPU memory while vLLM is profiling during initialization. "
+            "To fix this, ensure consistent GPU memory allocation or "
+            "isolate vLLM in its own container."
+        )
         available_kv_cache_memory = (
-            total_gpu_memory * self.cache_config.gpu_memory_utilization -
-            peak_memory)
+            self.requested_memory - profile_result.non_kv_cache_memory
+        )
 
-        msg = ("After memory profiling run, "
-               f"peak memory usage is {peak_memory / 1024**2:.2f} MB,"
-               f"torch mem is {torch_allocated_bytes / 1024**2:.2f} MB, "
-               f"non-torch mem is {non_torch_allocations / 1024**2:.2f} MB, "
-               f"free gpu memory is {free_gpu_memory / 1024**2:.2f} MB.")
-        logger.info(msg)
+        logger.debug(
+            "Initial free memory: %.2f GiB, free memory: %.2f GiB, "
+            "requested GPU memory: %.2f GiB",
+            GiB(self.init_snapshot.free_memory),
+            GiB(free_gpu_memory),
+            GiB(self.requested_memory),
+        )
+        logger.debug(profile_result)
+        logger.info(
+            "Available KV cache memory: %.2f GiB", GiB(available_kv_cache_memory)
+        )
 
         return int(available_kv_cache_memory)
 
@@ -149,6 +125,23 @@ class XPUWorker(Worker):
         os.environ["CCL_ATL_TRANSPORT"] = ENV_CCL_ATL_TRANSPORT
         os.environ["LOCAL_WORLD_SIZE"] = ENV_LOCAL_WORLD_SIZE
         os.environ["LOCAL_RANK"] = str(self.local_rank)
+
+        # take current memory snapshot
+        self.init_snapshot = MemorySnapshot()
+        self.requested_memory = (
+            self.init_snapshot.total_memory * self.cache_config.gpu_memory_utilization
+        )
+        if self.init_snapshot.free_memory < self.requested_memory:
+            GiB = lambda b: round(b / GiB_bytes, 2)
+            raise ValueError(
+                f"Free memory on device "
+                f"({GiB(self.init_snapshot.free_memory)}/"
+                f"{GiB(self.init_snapshot.total_memory)} GiB) on startup "
+                f"is less than desired GPU memory utilization "
+                f"({self.cache_config.gpu_memory_utilization}, "
+                f"{GiB(self.requested_memory)} GiB). Decrease GPU memory "
+                f"utilization or reduce GPU memory used by other processes."
+            )
 
         init_worker_distributed_environment(self.vllm_config, self.rank,
                                             self.distributed_init_method,
