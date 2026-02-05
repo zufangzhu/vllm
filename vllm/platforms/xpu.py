@@ -244,6 +244,17 @@ class XPUPlatform(Platform):
             os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
     @classmethod
+    def mem_get_info(cls, device) -> tuple[int, int]:
+        if cls.is_data_center_gpu():
+            # For data center GPU, use torch.xpu.mem_get_info
+            return torch.xpu.mem_get_info(device)
+        # FIXME:kunshang, For client GPU, estimate free memory
+        reserved_mem = torch.xpu.memory_reserved(device)
+        total_mem = torch.xpu.get_device_properties(device).total_memory
+        estimated_free_mem = total_mem - reserved_mem
+        return estimated_free_mem, total_mem
+
+    @classmethod
     def update_block_size_for_backend(cls, vllm_config: "VllmConfig") -> None:
         super().update_block_size_for_backend(vllm_config)
         from vllm.config.vllm import get_layers_from_vllm_config
