@@ -6,15 +6,9 @@ from enum import Enum
 import torch
 
 from vllm.logger import init_logger
-from vllm.utils import flashinfer as vllm_flashinfer
 from vllm.utils.torch_utils import direct_register_custom_op
 
 logger = init_logger(__name__)
-
-
-class Mxfp8LinearBackend(Enum):
-    EMULATION = "emulation"
-    FLASHINFER_CUTLASS = "flashinfer-cutlass"
 
 
 # MXFP8 constants
@@ -125,112 +119,3 @@ direct_register_custom_op(
     op_func=_mxfp8_e4m3_quantize_impl,
     fake_impl=mxfp8_e4m3_quantize_fake,
 )
-
-
-class Mxfp8LinearOp:
-    def __init__(self, backend: Mxfp8LinearBackend):
-        if backend not in Mxfp8LinearBackend:
-            raise ValueError(f"Unsupported backend: {backend}")
-
-        self.backend = backend
-
-    def _apply_emulation(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        weight_scale: torch.Tensor,
-        out_dtype: torch.dtype,
-        bias: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        # Validate weight_scale dtype and shape (must be 2D for TORCH backend)
-        if weight_scale.dtype != MXFP8_SCALE_DTYPE:
-            raise ValueError(
-                f"TORCH backend requires {MXFP8_SCALE_DTYPE} weight_scale dtype, "
-                f"got {weight_scale.dtype}."
-            )
-        if weight_scale.ndim != 2:
-            raise ValueError(
-                f"TORCH backend requires 2D weight_scale, got {weight_scale.ndim}D. "
-                f"Ensure process_weights_after_loading was called."
-            )
-
-        weight_bf16 = dequant_mxfp8_to_bf16(weight, weight_scale)
-
-        output = torch.nn.functional.linear(input, weight_bf16, bias)
-        return output.to(out_dtype)
-
-    def _apply_flashinfer_cutlass(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        weight_scale: torch.Tensor,
-        out_dtype: torch.dtype,
-        bias: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        N, K = weight.shape
-
-        input_shape = input.shape
-        input_2d = input.view(-1, K)
-        M_orig = input_2d.shape[0]
-
-        # Minimum dimension size for F8_128x4 block scaling layout
-        min_dim = 128
-
-        assert min_dim <= K, (
-            f"mm_mxfp8 requires K >= {min_dim}, got K={K}. "
-            f"in_features is too small for mm_mxfp8."
-        )
-        assert K % MXFP8_BLOCK_SIZE == 0, (
-            f"mm_mxfp8 requires K to be divisible by {MXFP8_BLOCK_SIZE}, got K={K}."
-        )
-        assert min_dim <= N, (
-            f"mm_mxfp8 requires N >= {min_dim}, got N={N}. "
-            f"out_features is too small for mm_mxfp8."
-        )
-
-        M_padded = ((M_orig + min_dim - 1) // min_dim) * min_dim
-        if M_padded != M_orig:
-            pad_rows = M_padded - M_orig
-            input_2d = torch.nn.functional.pad(input_2d, (0, 0, 0, pad_rows))
-
-        input_mxfp8, input_scale = mxfp8_e4m3_quantize(
-            input_2d,
-            is_sf_swizzled_layout=True,  # Swizzled for best accuracy
-        )
-
-        if not weight.is_contiguous():
-            weight = weight.contiguous()
-
-        output = vllm_flashinfer.mm_mxfp8(
-            input_mxfp8,
-            weight.t(),
-            input_scale,
-            weight_scale,
-            out_dtype=out_dtype,
-            backend="cutlass",
-        )
-
-        if M_padded != M_orig:
-            output = output[:M_orig, :]
-
-        if bias is not None:
-            output = output + bias
-
-        output_shape = (*input_shape[:-1], N)
-        return output.view(output_shape)
-
-    def apply(
-        self,
-        input: torch.Tensor,
-        weight: torch.Tensor,
-        weight_scale: torch.Tensor,
-        out_dtype: torch.dtype,
-        bias: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        if self.backend == Mxfp8LinearBackend.EMULATION:
-            return self._apply_emulation(input, weight, weight_scale, out_dtype, bias)
-
-        assert self.backend == Mxfp8LinearBackend.FLASHINFER_CUTLASS
-        return self._apply_flashinfer_cutlass(
-            input, weight, weight_scale, out_dtype, bias
-        )
