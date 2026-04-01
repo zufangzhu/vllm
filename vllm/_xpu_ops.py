@@ -124,8 +124,8 @@ def _xpu_mxfp8_quantize_impl(
     shape = x.shape[:-1] + (x.shape[-1] // MXFP8_BLOCK_SIZE,)
     x_s = torch.empty(shape, device=x.device, dtype=torch.float32)
     torch.ops._C.per_token_group_fp8_quant(
-            x, x_q, x_s, MXFP8_BLOCK_SIZE, eps, fp8_min, fp8_max, True
-        )
+        x, x_q, x_s, MXFP8_BLOCK_SIZE, eps, fp8_min, fp8_max, True
+    )
     x_s = x_s.to(torch.float8_e8m0fnu)
     return x_q, x_s
 
@@ -137,11 +137,12 @@ def _xpu_mxfp8_quantize_fake(
         dtype = current_platform.fp8_dtype()
 
     MXFP8_BLOCK_SIZE = 32
-    
+
     shape = x.shape[:-1] + (x.shape[-1] // MXFP8_BLOCK_SIZE,)
     x_s = torch.zeros(shape, device=x.device, dtype=torch.float32)
 
     return x.to(dtype), x_s.to(torch.float8_e8m0fnu)
+
 
 
 # Global flag to ensure ops are registered only once
@@ -545,7 +546,7 @@ class xpu_ops:
                 fake_impl=_xpu_ops_deepseek_scaling_rope_fake,
                 dispatch_key=current_platform.dispatch_key,
             )
-            
+
             direct_register_custom_op(
                 op_name="xpu_mxfp8_quantize",
                 op_func=_xpu_mxfp8_quantize_impl,
