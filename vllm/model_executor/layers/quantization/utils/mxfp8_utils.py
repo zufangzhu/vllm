@@ -205,6 +205,7 @@ direct_register_custom_op(
     fake_impl=flashinfer_mxfp8_e4m3_quantize_fake,
 )
 
+
 def xpu_mxfp8_quantize(
     x: torch.Tensor, dtype: torch.dtype | None = None
 ) -> tuple[torch.Tensor, torch.Tensor]:

@@ -545,6 +545,12 @@ class xpu_ops:
                 fake_impl=_xpu_ops_deepseek_scaling_rope_fake,
                 dispatch_key=current_platform.dispatch_key,
             )
+            
+            direct_register_custom_op(
+                op_name="xpu_mxfp8_quantize",
+                op_func=_xpu_mxfp8_quantize_impl,
+                fake_impl=xpu_mxfp8_quantize_fake,
+            )
 
             direct_register_custom_op(
                 op_name="xpu_mxfp8_quantize",
