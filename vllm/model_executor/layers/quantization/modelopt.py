@@ -7,6 +7,12 @@ from typing import TYPE_CHECKING, Any
 import torch
 from torch.nn.parameter import Parameter
 
+from vllm.model_executor.kernels.linear import (
+    MXFP8LinearLayerConfig,
+    choose_mxfp8_linear_kernel,
+    EmulationMXFP8LinearKernel,
+    FlashInferMXFP8LinearKernel,
+)
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
 from vllm.logger import init_logger
 from vllm.model_executor.kernels.linear import init_fp8_linear_kernel
@@ -32,6 +38,7 @@ from vllm.model_executor.layers.fused_moe.oracle.fp8 import (
     select_fp8_moe_backend,
 )
 from vllm.model_executor.layers.fused_moe.oracle.mxfp8 import (
+    QuantMXFP8,
     select_mxfp8_moe_backend,
 )
 from vllm.model_executor.layers.fused_moe.oracle.nvfp4 import (
@@ -67,9 +74,6 @@ from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (
     MXFP8_BLOCK_SIZE,
     MXFP8_SCALE_DTYPE,
     MXFP8_VALUE_DTYPE,
-    Mxfp8LinearBackend,
-    Mxfp8LinearOp,
-    mxfp8_e4m3_quantize,
     swizzle_mxfp8_scale,
 )
 from vllm.model_executor.layers.quantization.utils.nvfp4_utils import (
@@ -98,6 +102,7 @@ from vllm.model_executor.parameter import (
 )
 from vllm.model_executor.utils import replace_parameter, set_weight_attrs
 from vllm.utils.flashinfer import flashinfer_trtllm_fp8_block_scale_moe
+from vllm.platforms import current_platform
 
 if TYPE_CHECKING:
     from vllm.model_executor.models.utils import WeightsMapper
@@ -1555,10 +1560,6 @@ class ModelOptMxFp8LinearMethod(LinearMethodBase):
                 "Dynamic quantization is not supported."
             )
 
-        self.backend: Mxfp8LinearBackend = Mxfp8LinearBackend.FLASHINFER_CUTLASS
-        self.mxfp8_linear_op = Mxfp8LinearOp(backend=self.backend)
-        logger.info_once("Using %s backend for MXFP8 GEMM", self.backend.value)
-
     def create_weights(
         self,
         layer: torch.nn.Module,
@@ -1614,6 +1615,17 @@ class ModelOptMxFp8LinearMethod(LinearMethodBase):
             weight_loader=weight_loader,
         )
         layer.register_parameter("weight_scale", weight_scale)
+        
+        mxfp8_linear_kernel_config = MXFP8LinearLayerConfig(
+            full_weight_shape=(input_size, output_size),
+            partition_weight_shape=(
+                input_size_per_partition,
+                output_size_per_partition,
+            ),
+            weight_type=current_platform.fp8_dtype(),
+            out_type=self.out_dtype,
+        )
+        self.mxfp8_linear = choose_mxfp8_linear_kernel(mxfp8_linear_kernel_config)
 
     def _process_weights_after_loading_scale_2d(self, layer: torch.nn.Module) -> None:
         """Not swizzled - MXFP8 GEMM emulation"""
@@ -1669,12 +1681,12 @@ class ModelOptMxFp8LinearMethod(LinearMethodBase):
             f" got {layer.weight_scale.dtype}"
         )
 
-        if self.backend == Mxfp8LinearBackend.EMULATION:
+        if isinstance(self.mxfp8_linear, EmulationMXFP8LinearKernel):
             # Swizzled layout is not used
             self._process_weights_after_loading_scale_2d(layer)
             return
 
-        assert self.backend == Mxfp8LinearBackend.FLASHINFER_CUTLASS
+        assert isinstance(self.mxfp8_linear, FlashInferMXFP8LinearKernel)
         # Swizzled layout is required for Flashinfer CUTLASS
         self._process_weights_after_loading_scale_1d(layer)
 
@@ -1694,13 +1706,7 @@ class ModelOptMxFp8LinearMethod(LinearMethodBase):
                 f"expected {MXFP8_SCALE_DTYPE}"
             )
 
-        return self.mxfp8_linear_op.apply(
-            input=x,
-            weight=layer.weight,
-            weight_scale=layer.weight_scale,
-            out_dtype=x.dtype,
-            bias=bias,
-        )
+        return self.mxfp8_linear.apply_weights(layer, x, bias)
 
 
 class ModelOptMxFp8FusedMoE(FusedMoEMethodBase):
@@ -1713,6 +1719,7 @@ class ModelOptMxFp8FusedMoE(FusedMoEMethodBase):
     ) -> None:
         super().__init__(moe_config)
         self.quant_config = quant_config
+        self.quant_mxfp8 = QuantMXFP8()
         assert self.quant_config.is_checkpoint_mxfp8_serialized
 
         self.mxfp8_backend, _ = select_mxfp8_moe_backend(self.moe)
@@ -1992,7 +1999,7 @@ class ModelOptMxFp8FusedMoE(FusedMoEMethodBase):
         n_group = layer.num_expert_group or None
         topk_group = layer.topk_group or None
 
-        hidden_states_mxfp8, hidden_states_scale = mxfp8_e4m3_quantize(
+        hidden_states_mxfp8, hidden_states_scale = self.quant_mxfp8(
             x,
             is_sf_swizzled_layout=False,
         )

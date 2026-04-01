@@ -59,6 +59,21 @@ from vllm.model_executor.kernels.linear.scaled_mm import (
     ScaledMMLinearKernel,
     ScaledMMLinearLayerConfig,
 )
+
+from vllm.model_executor.kernels.linear.mxfp8 import (
+    MXFP8LinearKernel,
+    MXFP8LinearLayerConfig,
+)
+
+from vllm.model_executor.kernels.linear.mxfp8.flashinfer import (
+    FlashInferMXFP8LinearKernel,
+)
+from vllm.model_executor.kernels.linear.mxfp8.emulation import (
+    EmulationMXFP8LinearKernel,
+)
+from vllm.model_executor.kernels.linear.mxfp8.xpu import (
+    XPUMXFP8LinearKernel,
+)
 from vllm.model_executor.kernels.linear.scaled_mm.aiter import (
     AiterInt8ScaledMMLinearKernel,
 )
@@ -125,6 +140,17 @@ _POSSIBLE_FP8_KERNELS: dict[PlatformEnum, list[type[FP8ScaledMMLinearKernel]]] =
     ],
     PlatformEnum.XPU: [
         XPUFP8ScaledMMLinearKernel,
+    ],
+}
+
+_POSSIBLE_MXFP8_KERNELS: dict[PlatformEnum, list[type[MXFP8LinearKernel]]] = {
+    PlatformEnum.CUDA: [
+        FlashInferMXFP8LinearKernel,
+        EmulationMXFP8LinearKernel,
+    ],
+    PlatformEnum.XPU: [
+        XPUMXFP8LinearKernel,
+        EmulationMXFP8LinearKernel,
     ],
 }
 
@@ -367,9 +393,58 @@ def choose_mp_linear_kernel(
     )
 
 
+def choose_mxfp8_linear_kernel(
+    config: MXFP8LinearLayerConfig,
+    compute_capability: int | None = None,
+    force_kernel: type[MXFP8LinearKernel] | None = None,
+) -> type[MXFP8LinearKernel]:
+    if compute_capability is None:
+        if current_platform is None:
+            raise ValueError("Cannot determine compute capability")
+        _cc = current_platform.get_device_capability()
+        if _cc is not None:
+            compute_capability = _cc[0] * 10 + _cc[1]
+
+    failure_reasons = []
+    if force_kernel is not None:
+        can_implement, failure_reason = force_kernel.can_implement(config)
+        if can_implement:
+            return force_kernel
+        else:
+            failure_reasons.append(
+                f" {force_kernel.__name__} cannot implement due to: {failure_reason}"
+            )
+
+    for kernel in _POSSIBLE_MXFP8_KERNELS[current_platform._enum]:
+        if (
+            compute_capability is not None
+            and kernel.get_min_capability() > compute_capability
+        ):
+            failure_reasons.append(
+                f"{kernel.__name__} requires capability "
+                f"{kernel.get_min_capability()}, current compute "
+                f" capability is {compute_capability}"
+            )
+            continue
+
+        can_implement, failure_reason = kernel.can_implement(config)
+        if can_implement:
+            return kernel
+        else:
+            failure_reasons.append(
+                f" {kernel.__name__} cannot implement due to: {failure_reason}"
+            )
+
+    raise ValueError(
+        "No suitable MXFP8 linear kernel found. Reasons: \n"
+        + "\n".join(failure_reasons)
+    )
+
+
 __all__ = [
     "init_fp8_linear_kernel",
     "init_int8_linear_kernel",
+    "choose_mxfp8_linear_kernel",
     "choose_mp_linear_kernel",
     "FP8ScaledMMLinearKernel",
     "Int8ScaledMMLinearKernel",
@@ -399,4 +474,6 @@ __all__ = [
     "MarlinLinearKernel",
     "XPUW4A8IntLinearKernel",
     "XPUwNa16LinearKernel",
+    "MXFP8LinearLayerConfig",
+    "FlashInferMXFP8LinearKernel",
 ]
