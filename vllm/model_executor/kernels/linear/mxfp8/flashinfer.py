@@ -5,8 +5,7 @@ from .MXFP8LinearKernel import MXFP8LinearKernel, MXFP8LinearLayerConfig
 
 from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (
     MXFP8_BLOCK_SIZE,
-    mxfp8_e4m3_quantize,
-    swizzle_mxfp8_scale,
+    QuantMXFP8,
 )
 from vllm.model_executor.utils import replace_parameter, set_weight_attrs
 from vllm.utils import flashinfer as vllm_flashinfer
@@ -42,6 +41,7 @@ class FlashInferMXFP8LinearKernel(MXFP8LinearKernel):
         super().__init__(c, w_q_param_name, w_s_param_name)
         # Minimum dimension size for F8_128x4 block scaling layout
         self.min_dim = 128
+        self.quant_mxfp8 = QuantMXFP8()
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         pass
@@ -72,7 +72,7 @@ class FlashInferMXFP8LinearKernel(MXFP8LinearKernel):
             pad_rows = M_padded - M_orig
             input_2d = torch.nn.functional.pad(input_2d, (0, 0, 0, pad_rows))
 
-        input_mxfp8, input_scale = mxfp8_e4m3_quantize(
+        input_mxfp8, input_scale = self.quant_mxfp8(
             input_2d,
             is_sf_swizzled_layout=True,  # Swizzled for best accuracy
         )

@@ -10,6 +10,7 @@ from torch.nn.parameter import Parameter
 from vllm.model_executor.kernels.linear import (
     MXFP8LinearLayerConfig,
     choose_mxfp8_linear_kernel,
+    EmulationMXFP8LinearKernel,
     FlashInferMXFP8LinearKernel,
 )
 import vllm.model_executor.layers.fused_moe.modular_kernel as mk
@@ -37,6 +38,7 @@ from vllm.model_executor.layers.fused_moe.oracle.fp8 import (
     select_fp8_moe_backend,
 )
 from vllm.model_executor.layers.fused_moe.oracle.mxfp8 import (
+    QuantMXFP8,
     select_mxfp8_moe_backend,
 )
 from vllm.model_executor.layers.fused_moe.oracle.nvfp4 import (
@@ -72,7 +74,6 @@ from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (
     MXFP8_BLOCK_SIZE,
     MXFP8_SCALE_DTYPE,
     MXFP8_VALUE_DTYPE,
-    mxfp8_e4m3_quantize,
     swizzle_mxfp8_scale,
 )
 from vllm.model_executor.layers.quantization.utils.nvfp4_utils import (
@@ -1718,6 +1719,7 @@ class ModelOptMxFp8FusedMoE(FusedMoEMethodBase):
     ) -> None:
         super().__init__(moe_config)
         self.quant_config = quant_config
+        self.quant_mxfp8 = QuantMXFP8()
         assert self.quant_config.is_checkpoint_mxfp8_serialized
 
         self.mxfp8_backend, _ = select_mxfp8_moe_backend(self.moe)
@@ -1997,7 +1999,7 @@ class ModelOptMxFp8FusedMoE(FusedMoEMethodBase):
         n_group = layer.num_expert_group or None
         topk_group = layer.topk_group or None
 
-        hidden_states_mxfp8, hidden_states_scale = mxfp8_e4m3_quantize(
+        hidden_states_mxfp8, hidden_states_scale = self.quant_mxfp8(
             x,
             is_sf_swizzled_layout=False,
         )

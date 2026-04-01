@@ -40,9 +40,7 @@ from vllm.model_executor.layers.quantization.fp8 import (
 )
 from vllm.model_executor.layers.quantization.utils.mxfp8_utils import (
     MXFP8_BLOCK_SIZE,
-    Mxfp8LinearBackend,
-    Mxfp8LinearOp,
-    mxfp8_e4m3_quantize,
+    QuantMXFP8,
     swizzle_mxfp8_scale,
 )
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
@@ -137,6 +135,7 @@ class Mxfp8OnlineLinearMethod(Fp8OnlineLinearMethod):
 
     def __init__(self, quant_config: "Mxfp8Config"):
         self.quant_config = quant_config
+        self.quant_mxfp8 = QuantMXFP8()
         self.out_dtype = torch.get_default_dtype()
 
     def create_weights(
@@ -193,7 +192,7 @@ class Mxfp8OnlineLinearMethod(Fp8OnlineLinearMethod):
             layer.register_parameter("weight", weight)
             initialize_single_dummy_weight(layer.weight)
 
-        weight_fp8, weight_scale = mxfp8_e4m3_quantize(layer.weight.contiguous())
+        weight_fp8, weight_scale = self.quant_mxfp8(layer.weight.contiguous())
 
         if isinstance(self.mxfp8_linear, FlashInferMXFP8LinearKernel):
             N, K = layer.weight.shape[0], layer.weight.shape[1]
@@ -222,6 +221,7 @@ class Mxfp8OnlineMoEMethod(Fp8OnlineMoEMethod):
     def __init__(self, quant_config: Fp8Config, layer: torch.nn.Module):
         FusedMoEMethodBase.__init__(self, layer.moe_config)
         self.quant_config = quant_config
+        self.quant_mxfp8 = QuantMXFP8()
         assert not quant_config.is_checkpoint_fp8_serialized
         assert quant_config.activation_scheme == "dynamic"
 
@@ -290,7 +290,7 @@ class Mxfp8OnlineMoEMethod(Fp8OnlineMoEMethod):
         w_quant = []
         w_scales = []
         for i in range(num_batches):
-            mx_fp8_quant, mx_fp8_scale = mxfp8_e4m3_quantize(
+            mx_fp8_quant, mx_fp8_scale = self.quant_mxfp8(
                 weight[i], is_sf_swizzled_layout=False
             )
             w_quant.append(mx_fp8_quant)
