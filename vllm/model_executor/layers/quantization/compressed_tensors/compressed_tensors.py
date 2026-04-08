@@ -49,7 +49,7 @@ from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
     CompressedTensorsW4A16Mxfp4,
     CompressedTensorsW8A8Fp8,
     CompressedTensorsW8A8Int8,
-    CompressedTensorsW8A8MXFp8,
+    CompressedTensorsW8A8MxFp8,
     CompressedTensorsW8A16Fp8,
     CompressedTensorsWNA16,
 )
@@ -659,8 +659,6 @@ class CompressedTensorsConfig(QuantizationConfig):
             )
 
         act_quant_format = is_activation_quantization_format(format)
-        logger.debug(format)
-        logger.debug(act_quant_format)
         if act_quant_format:
             if self._is_nvfp4_format(weight_quant) and self._is_nvfp4_format(
                 input_quant
@@ -695,7 +693,7 @@ class CompressedTensorsConfig(QuantizationConfig):
                 )
 
             if self._is_mxfp8(weight_quant, input_quant):
-                return CompressedTensorsW8A8MXFp8()
+                return CompressedTensorsW8A8MxFp8()
 
             if self._is_static_tensor_w8a8(weight_quant, input_quant):
                 return CompressedTensorsW8A8Int8(

@@ -23,16 +23,16 @@ from vllm.model_executor.parameter import (
 )
 from vllm.platforms import current_platform
 
-__all__ = ["CompressedTensorsW8A8MXFp8"]
+__all__ = ["CompressedTensorsW8A8MxFp8"]
 
 
-class CompressedTensorsW8A8MXFp8(CompressedTensorsScheme):
+class CompressedTensorsW8A8MxFp8(CompressedTensorsScheme):
     def __init__(self):
         self.group_size = MXFP8_BLOCK_SIZE
 
     @classmethod
     def get_min_capability(cls) -> int:
-        return 100
+        return -1 if current_platform.is_xpu() else 100
 
     def create_weights(
         self,
