@@ -5,6 +5,7 @@ import os
 
 import torch
 
+import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
@@ -13,6 +14,7 @@ from vllm.utils.mem_utils import MemorySnapshot, format_gib
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.utils import report_usage_stats
 from vllm.v1.worker.gpu_worker import Worker, init_worker_distributed_environment
+from vllm.v1.worker.worker_base import CompilationTimes
 from vllm.v1.worker.workspace import init_workspace_manager
 from vllm.v1.worker.xpu_model_runner import XPUModelRunner, XPUModelRunnerV2
 
@@ -38,6 +40,33 @@ class XPUWorker(Worker):
         device_config = self.device_config
         assert device_config.device_type == "xpu"
         assert current_platform.is_xpu()
+
+    def compile_or_warm_up_model(self) -> CompilationTimes:
+        # WA here since for XPU Graph profile replay phrase requires profile
+        # capture phrase. Also, to reduce the overhead, we won't dump anything
+        # during the profile capture phrase.
+        profile_capture = (
+            envs.VLLM_XPU_ENABLE_XPU_GRAPH
+            and not self.model_config.enforce_eager
+            and self.profiler_config is not None
+            and self.profiler_config.profiler is not None
+        )
+        if profile_capture:
+            profiler = self.profiler
+            worker_name = f"{self.vllm_config.instance_id}-rank-{self.rank}"
+            self.profiler = TorchProfilerWrapper(
+                self.profiler_config,
+                worker_name=worker_name,
+                local_rank=self.local_rank,
+                activities=["CPU", "XPU"],
+            )
+            self.profiler.profiler.on_trace_ready = None
+            self.profile(True, profile_prefix="compile_or_warm_up_model")
+        compile_times = super().compile_or_warm_up_model()
+        if profile_capture:
+            self.profile(False)
+            self.profiler = profiler
+        return compile_times
 
     def init_device(self):
         # In DP mode, XPU workers see all visible devices.
