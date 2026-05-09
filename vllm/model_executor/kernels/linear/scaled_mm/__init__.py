@@ -39,6 +39,10 @@ from vllm.model_executor.kernels.linear.scaled_mm.triton import (
     TritonInt8ScaledMMLinearKernel,
 )
 
+from vllm.model_executor.kernels.linear.scaled_mm.xpu import (
+    XPUFP8BlockScaledMMLinearKernel,
+)
+
 __all__ = [
     "FP8ScaledMMLinearKernel",
     "FP8ScaledMMLinearLayerConfig",
@@ -58,4 +62,5 @@ __all__ = [
     "ROCmFP8ScaledMMLinearKernel",
     "TritonInt8ScaledMMLinearKernel",
     "Fp8BlockScaledMMLinearKernel",
+    "XPUFp8BlockScaledMMKernel",
 ]
