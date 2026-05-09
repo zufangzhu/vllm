@@ -155,6 +155,7 @@ from vllm.model_executor.kernels.linear.scaled_mm.triton import (
     TritonInt8ScaledMMLinearKernel,
 )
 from vllm.model_executor.kernels.linear.scaled_mm.xpu import (
+    XPUFP8BlockScaledMMLinearKernel,
     XPUFP8ScaledMMLinearKernel,
 )
 from vllm.model_executor.layers.quantization.utils.quant_utils import QuantKey
@@ -306,6 +307,9 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
     ],
     PlatformEnum.CPU: [
         CPUFp8BlockScaledMMKernel,
+    ],
+    PlatformEnum.XPU: [
+        XPUFP8BlockScaledMMLinearKernel,
     ],
 }
 
