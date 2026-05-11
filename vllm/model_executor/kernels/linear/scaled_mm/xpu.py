@@ -80,6 +80,11 @@ class XPUFP8ScaledMMLinearKernel(FP8ScaledMMLinearKernel):
 
 class XPUFP8BlockScaledMMLinearKernel(Fp8BlockScaledMMLinearKernel):
 
+    def __init__(
+        self, config: FP8ScaledMMLinearLayerConfig) -> None:
+        super().__init__(config)
+        self.apply_input_quant = True
+
     @classmethod
     def is_supported(cls, compute_capability=None):
         if not current_platform.is_xpu():
@@ -94,4 +99,6 @@ class XPUFP8BlockScaledMMLinearKernel(Fp8BlockScaledMMLinearKernel):
         As: torch.Tensor,
         Bs: torch.Tensor,
     ) -> torch.Tensor:
+        if not self.apply_input_quant:
+            return torch.ops._xpu_C.fp8_gemm_w8a16(A, B, Bs, None)
         return torch.ops._xpu_C.fp8_gemm(A, B.t(), self.config.out_dtype, As, Bs, None)
