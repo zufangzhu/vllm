@@ -14,9 +14,9 @@ from vllm.model_executor.layers.fused_moe.topk_weight_and_reduce import (
 )
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     QuantKey,
-    kFp8Static128BlockSym,
     kFp8Dynamic128Sym,
     kFp8DynamicTensorSym,
+    kFp8Static128BlockSym,
     kFp8StaticTensorSym,
     kMxfp4Static,
 )
@@ -170,6 +170,7 @@ class XPUExpertsFp8(XPUExperts):
         )
         self.is_fp8 = True
 
+
 class XPUExpertsBlockFp8(XPUExperts):
     def __init__(
         self,
@@ -195,6 +196,7 @@ class XPUExpertsBlockFp8(XPUExperts):
             (kFp8Static128BlockSym, kFp8Dynamic128Sym),
         ]
         return (weight_key, activation_key) in SUPPORTED_W_A
+
 
 class XPUExpertsMXFp4(XPUExperts):
     def __init__(

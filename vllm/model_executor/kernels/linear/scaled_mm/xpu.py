@@ -5,6 +5,13 @@ from collections.abc import Sequence
 
 import torch
 
+from vllm.model_executor.layers.quantization.utils.quant_utils import (
+    kFp8StaticChannelSym,
+    kFp8StaticTensorSym,
+)
+from vllm.model_executor.utils import replace_parameter
+from vllm.platforms import current_platform
+
 from .BlockScaledMMLinearKernel import (
     Fp8BlockScaledMMLinearKernel,
 )
@@ -12,15 +19,6 @@ from .ScaledMMLinearKernel import (  # noqa: E501
     FP8ScaledMMLinearKernel,
     FP8ScaledMMLinearLayerConfig,
 )
-from vllm.model_executor.layers.quantization.utils.quant_utils import (
-    kFp8StaticChannelSym,
-    kFp8StaticTensorSym,
-    kFp8Dynamic128Sym,
-    kFp8Static128BlockSym,
-    GroupShape,
-)
-from vllm.model_executor.utils import replace_parameter
-from vllm.platforms import current_platform
 
 
 class XPUFP8ScaledMMLinearKernel(FP8ScaledMMLinearKernel):
@@ -79,9 +77,7 @@ class XPUFP8ScaledMMLinearKernel(FP8ScaledMMLinearKernel):
 
 
 class XPUFP8BlockScaledMMLinearKernel(Fp8BlockScaledMMLinearKernel):
-
-    def __init__(
-        self, config: FP8ScaledMMLinearLayerConfig) -> None:
+    def __init__(self, config: FP8ScaledMMLinearLayerConfig) -> None:
         super().__init__(config)
         self.apply_input_quant = True
 
@@ -91,7 +87,6 @@ class XPUFP8BlockScaledMMLinearKernel(Fp8BlockScaledMMLinearKernel):
             return False, "XPUFP8BlockScaledMM only support on XPU"
         return True, None
 
-  
     def apply_block_scaled_mm(
         self,
         A: torch.Tensor,
@@ -101,4 +96,4 @@ class XPUFP8BlockScaledMMLinearKernel(Fp8BlockScaledMMLinearKernel):
     ) -> torch.Tensor:
         if not self.apply_input_quant:
             return torch.ops._xpu_C.fp8_gemm_w8a16(A, B, Bs, None)
-        return torch.ops._xpu_C.fp8_gemm(A, B.t(), self.config.out_dtype, As, Bs, None)
+        return torch.ops._xpu_C.fp8_gemm(A, B.t(), self.config.out_dtype, As, Bs.t().contiguous(), None)

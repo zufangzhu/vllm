@@ -202,7 +202,7 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
     ],
     PlatformEnum.XPU: [
         XPUFP8BlockScaledMMLinearKernel,
-    ]
+    ],
 }
 
 _POSSIBLE_WFP8A16_KERNELS: dict[PlatformEnum, list[type[FP8ScaledMMLinearKernel]]] = {
