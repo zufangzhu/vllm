@@ -74,20 +74,22 @@ class XPUWorker(Worker):
             and self.profiler_config.profiler is not None
         )
         if profile_capture:
-            profiler = self.profiler
-            worker_name = f"{self.vllm_config.instance_id}-rank-{self.rank}"
-            self.profiler = TorchProfilerWrapper(
-                self.profiler_config,
-                worker_name=worker_name,
-                local_rank=self.local_rank,
-                activities=["CPU", "XPU"],
-            )
-            self.profiler.profiler.on_trace_ready = None
+            if self.profiler_config.profiler == "torch":
+                profiler = self.profiler
+                worker_name = f"{self.vllm_config.instance_id}-rank-{self.rank}"
+                self.profiler = TorchProfilerWrapper(
+                    self.profiler_config,
+                    worker_name=worker_name,
+                    local_rank=self.local_rank,
+                    activities=["CPU", "XPU"],
+                )
+                self.profiler.profiler.on_trace_ready = None
             self.profile(True, profile_prefix="compile_or_warm_up_model")
         compile_times = super().compile_or_warm_up_model()
         if profile_capture:
             self.profile(False)
-            self.profiler = profiler
+            if self.profiler_config.profiler == "torch":
+                self.profiler = profiler
         return compile_times
 
     def init_device(self):
