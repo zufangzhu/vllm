@@ -11,6 +11,7 @@ from vllm.config import CacheConfig, get_current_vllm_config
 from vllm.config.vllm import VllmConfig
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.logger import init_logger
+from vllm.compilation.breakable_cudagraph import eager_break_during_capture
 from vllm.model_executor.layers.attention.kv_transfer_utils import (
     maybe_transfer_kv_layer,
 )
@@ -730,6 +731,7 @@ direct_register_custom_op(
 )
 
 
+@eager_break_during_capture
 @maybe_transfer_kv_layer
 def unified_attention_with_output(
     query: torch.Tensor,
