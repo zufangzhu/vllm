@@ -112,7 +112,7 @@ def _get_priority_backends() -> list[WNA16MoEBackend]:
     if current_platform.is_cpu():
         return [WNA16MoEBackend.CPU]
     if current_platform.is_xpu():
-        return [WNA16MoEBackend.XPU]
+        return [WNA16MoEBackend.TRITON, WNA16MoEBackend.XPU]
 
     return [
         WNA16MoEBackend.FLASHINFER_TRTLLM,

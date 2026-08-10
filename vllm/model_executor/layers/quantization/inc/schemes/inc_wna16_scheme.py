@@ -34,7 +34,7 @@ class INCWna16Scheme(INCScheme):
         prefix: str,
         layer_config: "INCLayerConfig",
     ):
-        del config, layer
+        del config
         if current_platform.is_xpu():
             if layer_config.bits in XPU_WNA16_SUPPORTED_BITS and layer_config.sym:
                 from .inc_ark_ops import get_ark_state
@@ -43,10 +43,24 @@ class INCWna16Scheme(INCScheme):
                     INCXPULinearMethod,
                 )
 
+                # The ARK backend requires in_features to be divisible by the
+                # group size. AutoRound checkpoints may quantize dimensions that
+                # are not (e.g. Gemma MoE with intermediate_size 2112 / 704 and
+                # group_size 128), so route those layers to the default XPU INC
+                # path which supports ceil-grouped scales instead.
+                in_features = getattr(layer, "input_size_per_partition", None)
+                if in_features is None:
+                    in_features = getattr(layer, "input_size", None)
+                ark_divisible = (
+                    in_features is None
+                    or layer_config.group_size <= 0
+                    or in_features % layer_config.group_size == 0
+                )
+
                 is_ark_available, ark_error, _, _ = get_ark_state()
-                if is_ark_available:
+                if is_ark_available and ark_divisible:
                     return INCLinearMethod(INCARKLinearMethod(layer_config))
-                elif layer_config.bits == 2:
+                elif layer_config.bits == 2 and not is_ark_available:
                     raise NotImplementedError(
                         "INC int2 on XPU requires the ARK backend. "
                         f"Layer: {prefix}. "
@@ -54,12 +68,22 @@ class INCWna16Scheme(INCScheme):
                         f"{ark_error or 'unknown error'}"
                     )
 
-                logger.debug(
-                    "ARK backend is unavailable for layer %s; "
-                    "falling back to the default XPU INC path. Error: %s",
-                    prefix,
-                    ark_error or "unknown error",
-                )
+                if not ark_divisible:
+                    logger.debug(
+                        "ARK backend requires in_features (%s) divisible by "
+                        "group_size (%s) for layer %s; using the default XPU "
+                        "INC path.",
+                        in_features,
+                        layer_config.group_size,
+                        prefix,
+                    )
+                else:
+                    logger.debug(
+                        "ARK backend is unavailable for layer %s; "
+                        "falling back to the default XPU INC path. Error: %s",
+                        prefix,
+                        ark_error or "unknown error",
+                    )
                 return INCLinearMethod(INCXPULinearMethod(layer_config))
             raise NotImplementedError(f"INC on XPU: unsupported config {layer_config}")
 
