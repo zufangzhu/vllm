@@ -3,11 +3,10 @@
 import os
 import time
 from collections import deque
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from functools import partial
 
 import torch
-
 from vllm.config import VllmConfig
 from vllm.distributed.parallel_state import get_tp_group
 from vllm.logger import init_logger
@@ -91,7 +90,8 @@ class ProfileTraceMixin:
         num_scheduled = scheduler_output.num_scheduled_tokens
         logger.info("total_requests_num: %d", len(num_scheduled))
         logger.info(
-            "total_num_scheduled_tokens: %d", scheduler_output.total_num_scheduled_tokens
+            "total_num_scheduled_tokens: %d",
+            scheduler_output.total_num_scheduled_tokens,
         )
         for req in scheduler_output.scheduled_new_reqs:
             logger.info("    request id: %s", req.req_id)
@@ -149,9 +149,7 @@ class ProfileTraceMixin:
         if self._prof_is_rank0():
             logger.info("%s time: %.3f ms", tag, (now - self._prof_tprev) * 1000)
             if tag == "postprocess":
-                logger.info(
-                    "execute_model time: %.3f ms", (now - self._prof_t0) * 1000
-                )
+                logger.info("execute_model time: %.3f ms", (now - self._prof_t0) * 1000)
         self._prof_tprev = now
 
     def _drain_device_events(self) -> None:
@@ -198,9 +196,7 @@ class ProfileTraceMixin:
             now = self._prof_now()
             if self._prof_is_rank0():
                 logger.info("sample_tokens time: %.3f ms", (now - t0) * 1000)
-                logger.info(
-                    "step time (worker): %.3f ms", (now - self._prof_t0) * 1000
-                )
+                logger.info("step time (worker): %.3f ms", (now - self._prof_t0) * 1000)
 
     @contextmanager
     def prof_forward_ctx(self):
@@ -230,9 +226,7 @@ class ProfileTraceMixin:
         finally:
             if self._prof_do_trace:
                 end.record()
-                self._prof_ev_pending.append(
-                    (self.step, self._prof_m, end, start, end)
-                )
+                self._prof_ev_pending.append((self.step, self._prof_m, end, start, end))
 
     @contextmanager
     def _torch_profiler_ctx(self):
@@ -256,7 +250,6 @@ class ProfileTraceMixin:
             f.write(prof.key_averages().table(sort_by="self_xpu_time_total"))
         prof.export_chrome_trace(f"{self.profile_path}/vllm_trace_{base}.json")
         logger.info("Saved torch profiler trace: vllm_trace_%s.json", base)
-
 
     @contextmanager
     def _unitrace_ctx(self):

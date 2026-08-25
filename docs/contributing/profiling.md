@@ -242,9 +242,148 @@ You can view these profiles either as summaries in the CLI, using `nsys stats [p
 
 GUI example:
 
-<img width="1799" alt="Screenshot 2025-03-05 at 11 48 42 AM" src="https://github.com/user-attachments/assets/c7cff1ae-6d6f-477d-a342-bd13c4fc424c" />
+<img width="1799" alt="Screenshot 2025-03-05 at 11 48 42 AM" src="https://github.com/user-attachments/assets/c7cff1ae-6d6f-477d-a342-bd13c4fc424c" />
+
+## Per-Step Tracing on XPU
+
+On XPU, the model runner can log a timing breakdown for every engine step, and
+optionally capture kernel timings for a subset of steps. This answers a
+different question from the profilers above: instead of "which kernels are
+expensive", it tells you what each individual step cost and what batch shape
+produced that cost, which is what you need to correlate against a scheduler
+trace or a performance projection.
+
+!!! warning
+    This only covers the **V1** `XPUModelRunner`. `use_v2_model_runner` defaults
+    to `True`, so you must set `VLLM_USE_V2_MODEL_RUNNER=0`. Under the V2 runner
+    these switches are silently inactive and produce no output at all.
+
+### Switches
+
+All of these are off by default and read once at model runner construction.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TRACE` | off | Log per-step host timing and batch composition |
+| `TRACE_SYNC` | `1` | `1`: synchronize at phase boundaries, giving wall-clock per phase. `0`: no synchronization, giving host-side cost |
+| `PROFILE` | off | Capture kernel timings on checkpoint steps |
+| `PROFILE_BACKEND` | `torch` | `torch` writes a chrome trace per capture; `unitrace` instead gates `PTI_ENABLE_COLLECTION` for an external collector |
+| `PROFILE_STACK` | `0` | Record Python stacks (`torch` backend only) |
+| `PROFILE_INTERVAL` | `200` | Capture every N decode steps; steps containing prefill are always captured |
+| `PROFILE_PATH` | `./logs/` | Output directory |
+| `NUM_WARMUPS` | `0` | Steps to skip before counting and capturing |
+| `PROFILE_ALL_RANKS` | `0` | Capture on every TP rank instead of rank 0 only |
+
+### Host timing
+
+```bash
+VLLM_USE_V2_MODEL_RUNNER=0 TRACE=1 TRACE_SYNC=0 NUM_WARMUPS=10 <vllm command>
+```
+
+Each step logs its batch shape, the per-request context lengths, and a phase
+breakdown:
+
+```text
+m = 3, step = 54:
+    total_num_scheduled_tokens: 3
+    request id: 1-aaa2f954
+        context_len: 64
+        num_scheduled_token: 1
+    ...
+step = 53, m = 4, forward device: 29.995 ms
+preprocess time: 8.487 ms
+forward time: 33.128 ms
+postprocess time: 1.376 ms
+execute_model time: 42.991 ms
+sample_tokens time: 0.562 ms
+step time (worker): 43.699 ms
+```
+
+`TRACE_SYNC` changes what the host numbers mean and is worth choosing
+deliberately. With `TRACE_SYNC=1` each phase boundary synchronizes, so a phase
+absorbs the device work queued before it — useful for wall-clock attribution,
+but it will make host time look almost identical to device time. With
+`TRACE_SYNC=0` no synchronization happens and the numbers reflect host-side cost
+only. The difference concentrates in launch-bound phases; on one measured
+configuration `postprocess` went from 0.889 ms to 0.309 ms.
+
+!!! note
+    `step time (worker)` covers `execute_model` plus `sample_tokens`. It does not
+    include scheduling or output processing, which happen in the engine core
+    process.
+
+### Device timing
+
+When `TRACE` is on, the forward is bracketed with XPU events. Results are
+drained with `query()` rather than a synchronize, so the host is never stalled —
+which means a step's device time is printed **one or more steps after** that
+step's header. The line carries its own `step =` tag, so it can be matched back.
+The last few steps of a run may have no device timing at all.
+
+!!! warning
+    This is the forward's device **span**, not kernel busy time. The span
+    includes any gaps where the device sat idle waiting on the host. On a
+    host-bound run the two differ substantially: one measured configuration
+    showed 3.45 ms of kernel busy time inside a 46 ms span, i.e. 7.5%
+    utilization. Use `PROFILE=1` when you need busy time.
+
+### Kernel capture
+
+```bash
+VLLM_USE_V2_MODEL_RUNNER=0 PROFILE=1 PROFILE_STACK=0 \
+    PROFILE_INTERVAL=50 NUM_WARMUPS=10 PROFILE_PATH=./logs <vllm command>
+```
+
+This writes a chrome trace and a `self_xpu_time_total` table per captured step.
+
+`PROFILE_STACK` is off by default on purpose. Enabling it produced identical
+kernel timings (339 kernels, 3403 vs 3410 us) while costing 3.55x runtime and
+80 MB per trace, versus 1.26x and 6 MB with it off. Turn it on only when you
+need to attribute kernels back to source lines.
+
+To collect with an external [unitrace](https://github.com/intel/pti-gpu) run
+instead, set `PROFILE_BACKEND=unitrace` and start the process with
+`PTI_ENABLE_COLLECTION=0` so that only the gated windows are recorded:
+
+```bash
+VLLM_USE_V2_MODEL_RUNNER=0 PROFILE=1 PROFILE_BACKEND=unitrace \
+    PTI_ENABLE_COLLECTION=0 \
+    unitrace --chrome-kernel-logging --output-dir ./logs <vllm command>
+```
+
+### Analyzing the logs
+
+Device timings are interleaved with the following step's output, so the log is
+awkward to read by hand. Use
+[tools/profiler/parse_step_trace.py](../../tools/profiler/parse_step_trace.py)
+to flatten it into one CSV row per step:
+
+```bash
+python tools/profiler/parse_step_trace.py server.log -o steps.csv
+```
+
+Each row carries the batch shape, per-request context lengths, every host phase,
+the forward device span, and a `device_over_host` ratio. The summary it prints
+separates decode-only steps from steps containing prefill, since their costs
+differ by orders of magnitude and mixing them makes the medians meaningless.
+
+### Overhead
+
+Measured on Qwen3-0.6B, XPU, TP=1, eager, 16x256/128, against a three-run
+baseline with ±1% variance:
+
+| Configuration | Overhead |
+| --- | --- |
+| `TRACE=1 TRACE_SYNC=0` | 1.06x |
+| `PROFILE=1 PROFILE_STACK=0` | 1.26x |
+| `PROFILE=1 PROFILE_STACK=1` | 3.55x |
+
+Capture only affects checkpoint steps, so per-step medians stay usable when
+`TRACE` and `PROFILE` are both on; only the total wall-clock inflates. Use
+medians rather than means in that case.
 
 ## Continuous Profiling
+
 
 There is a [GitHub CI workflow](https://github.com/pytorch/pytorch-integration-testing/actions/workflows/vllm-profiling.yml) in the PyTorch infrastructure repository that provides continuous profiling for different models on vLLM. This automated profiling helps track performance characteristics over time and across different model configurations.
 
