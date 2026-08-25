@@ -4282,6 +4282,22 @@ class GPUModelRunner(
         num_reqs = self.input_batch.num_reqs
         return bool(self.discard_request_mask.np[:num_reqs].all())
 
+    # ---------------------------------------------------------------------
+    # Profiling / tracing hooks. No-ops on the base runner; XPUModelRunner
+    # overrides them. Keep this surface tiny so rebases stay cheap.
+    # ---------------------------------------------------------------------
+    def prof_begin_step(self, scheduler_output: "SchedulerOutput") -> None:
+        """Called once at the top of execute_model()."""
+        return None
+
+    def prof_mark(self, tag: str) -> None:
+        """Called at each phase boundary inside execute_model()."""
+        return None
+
+    def prof_forward_ctx(self) -> AbstractContextManager:
+        """Context manager wrapping the model forward only."""
+        return nullcontext()
+
     @torch.inference_mode()
     def execute_model(
         self,
@@ -4293,6 +4309,8 @@ class GPUModelRunner(
                 "State error: sample_tokens() must be called "
                 "after execute_model() returns None."
             )
+
+        self.prof_begin_step(scheduler_output)
 
         # If ngram_gpu is used, we need to copy the scheduler_output to avoid
         # the modification has influence on the scheduler_output in engine core process.
@@ -4559,13 +4577,16 @@ class GPUModelRunner(
                 defer_finalize=defer_kv_connector_finalize,
             ) as kv_connector_output,
         ):
-            model_output = self._model_forward(
-                input_ids=input_ids,
-                positions=positions,
-                intermediate_tensors=intermediate_tensors,
-                inputs_embeds=inputs_embeds,
-                **model_kwargs,
-            )
+            self.prof_mark("preprocess")
+            with self.prof_forward_ctx():
+                model_output = self._model_forward(
+                    input_ids=input_ids,
+                    positions=positions,
+                    intermediate_tensors=intermediate_tensors,
+                    inputs_embeds=inputs_embeds,
+                    **model_kwargs,
+                )
+            self.prof_mark("forward")
 
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
             if self.use_aux_hidden_state_outputs:
@@ -4643,6 +4664,8 @@ class GPUModelRunner(
         # previous model forward without breaking async scheduling.
         if deferred_state_corrections_fn:
             deferred_state_corrections_fn()
+
+        self.prof_mark("postprocess")
 
         return None
 
