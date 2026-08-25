@@ -160,26 +160,22 @@ class ProfileTraceMixin:
         capped so a stuck event cannot grow it without bound.
         """
         q = self._prof_ev_pending
-        while q and q[0][2].query():
-            step, m, _, start, end = q.popleft()
-            if self._prof_is_rank0():
-                logger.info(
-                    "step = %d, m = %d, forward device: %.3f ms",
-                    step,
-                    m,
-                    start.elapsed_time(end),
-                )
+        while q and q[0][3].query():
+            self._report_device_event(*q.popleft())
         if len(q) > 32:
             # Backlog: force the oldest out rather than leak events.
-            step, m, end, start, _ = q.popleft()
+            step, m, start, end = q.popleft()
             end.synchronize()
-            if self._prof_is_rank0():
-                logger.info(
-                    "step = %d, m = %d, forward device: %.3f ms",
-                    step,
-                    m,
-                    start.elapsed_time(end),
-                )
+            self._report_device_event(step, m, start, end)
+
+    def _report_device_event(self, step: int, m: int, start, end) -> None:
+        if self._prof_is_rank0():
+            logger.info(
+                "step = %d, m = %d, forward device: %.3f ms",
+                step,
+                m,
+                start.elapsed_time(end),
+            )
 
     def prof_sample_tokens(self, super_call):
         """Wrap sample_tokens() so the step total covers sampling too.
@@ -207,7 +203,8 @@ class ProfileTraceMixin:
         the host wall-clock printed by prof_mark() is a different quantity
         (on small/eager models it can be ~6x larger).
         """
-        start = end = None
+        start: torch.xpu.Event | None = None
+        end: torch.xpu.Event | None = None
         if self._prof_do_trace:
             start = torch.xpu.Event(enable_timing=True)
             end = torch.xpu.Event(enable_timing=True)
@@ -224,9 +221,9 @@ class ProfileTraceMixin:
             else:
                 yield
         finally:
-            if self._prof_do_trace:
+            if start is not None and end is not None:
                 end.record()
-                self._prof_ev_pending.append((self.step, self._prof_m, end, start, end))
+                self._prof_ev_pending.append((self.step, self._prof_m, start, end))
 
     @contextmanager
     def _torch_profiler_ctx(self):
