@@ -286,7 +286,12 @@ def main():
     ap.add_argument(
         "--min-step",
         type=int,
-        help="drop steps below this index (e.g. to skip warmup)",
+        help=(
+            "drop steps below this index (e.g. to skip warmup). Note that "
+            "absolute step numbers are not stable across runs because idle "
+            "m=0 steps between requests also advance the counter; prefer "
+            "skipping warmup at the source via NUM_WARMUP_STEPS."
+        ),
     )
     ap.add_argument("--quiet", action="store_true", help="suppress the summary")
     args = ap.parse_args()

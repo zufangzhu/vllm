@@ -271,13 +271,23 @@ All of these are off by default and read once at model runner construction.
 | `PROFILE_STACK` | `0` | Record Python stacks (`torch` backend only) |
 | `PROFILE_INTERVAL` | `200` | Capture every N decode steps; steps containing prefill are always captured |
 | `PROFILE_PATH` | `./logs/` | Output directory |
-| `NUM_WARMUPS` | `0` | Steps to skip before counting and capturing |
+| `NUM_WARMUP_STEPS` | `0` | Steps to skip before counting and capturing |
 | `PROFILE_ALL_RANKS` | `0` | Capture on every TP rank instead of rank 0 only |
+
+!!! note
+    The step counter increments on every `execute_model` call, including empty
+    scheduler steps (`total_requests_num: 0`) that the engine ticks in the idle
+    gap between two client requests. Because those idle ticks are latency
+    dependent, the absolute step numbers are not stable across runs, so pick
+    `NUM_WARMUP_STEPS` with margin rather than an exact count. A good starting
+    point is `num_warmup_requests * (1 + output_len)`, e.g. one ready-check plus
+    one warmup request generating 512 tokens each gives roughly
+    `2 * (1 + 512) ≈ 1026`; round up (e.g. to `1050`) to absorb the idle steps.
 
 ### Host timing
 
 ```bash
-VLLM_USE_V2_MODEL_RUNNER=0 TRACE=1 TRACE_SYNC=0 NUM_WARMUPS=10 <vllm command>
+VLLM_USE_V2_MODEL_RUNNER=0 TRACE=1 TRACE_SYNC=0 NUM_WARMUP_STEPS=10 <vllm command>
 ```
 
 Each step logs its batch shape, the per-request context lengths, and a phase
@@ -331,7 +341,7 @@ The last few steps of a run may have no device timing at all.
 
 ```bash
 VLLM_USE_V2_MODEL_RUNNER=0 PROFILE=1 PROFILE_STACK=0 \
-    PROFILE_INTERVAL=50 NUM_WARMUPS=10 PROFILE_PATH=./logs <vllm command>
+    PROFILE_INTERVAL=50 NUM_WARMUP_STEPS=10 PROFILE_PATH=./logs <vllm command>
 ```
 
 This writes a chrome trace and a `self_xpu_time_total` table per captured step.

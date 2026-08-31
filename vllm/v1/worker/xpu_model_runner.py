@@ -41,7 +41,7 @@ class ProfileTraceMixin:
                        only collects these windows.
     PROFILE_PATH=dir   output dir for traces (default ./logs/)
     PROFILE_INTERVAL=n capture every n decode steps (default 200)
-    NUM_WARMUPS=n      steps to skip before counting/capturing (default 0)
+    NUM_WARMUP_STEPS=n steps to skip before counting/capturing (default 0)
     PROFILE_ALL_RANKS=1 capture on every TP rank (default: rank0 only)
     PROFILE_STACK=1    record python stacks (13x bigger trace, 3x slower)
     """
@@ -52,7 +52,7 @@ class ProfileTraceMixin:
         self.profile_env = _env_on("PROFILE")
         self.profile_path = os.environ.get("PROFILE_PATH", "./logs/")
         self.profile_every_n_steps = int(os.environ.get("PROFILE_INTERVAL", 200))
-        self.warm_ups_num = int(os.environ.get("NUM_WARMUPS", 0))
+        self.warm_ups_num = int(os.environ.get("NUM_WARMUP_STEPS", 0))
         self.profile_all_ranks = _env_on("PROFILE_ALL_RANKS")
         # Python stacks make traces ~13x bigger and dominate export cost
         # (measured: 80MB/14.5s vs 6MB/5.1s) with identical kernel timings.
