@@ -6,6 +6,7 @@ import torch
 
 from vllm import _custom_ops as ops
 from vllm.model_executor.layers.quantization.compressed_tensors.triton_scaled_mm import (  # noqa: E501
+    _TD_ALLOCATOR_DEVICES,
     triton_scaled_mm,
 )
 from vllm.model_executor.layers.quantization.utils import replace_parameter
@@ -13,6 +14,8 @@ from vllm.model_executor.layers.quantization.utils.w8a8_utils import (
     convert_to_channelwise,
 )
 from vllm.platforms import current_platform
+from vllm.triton_utils import use_tensor_descriptor
+from vllm.triton_utils.allocation import set_triton_allocator
 from vllm.utils.torch_utils import direct_register_custom_op
 
 from .BlockScaledMMLinearKernel import (
@@ -41,6 +44,11 @@ class TritonInt8ScaledMMLinearKernel(CutlassInt8ScaledMMLinearKernel):
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
         w_q, _, i_s, _, _ = self._get_layer_params(layer)
+        # Register the TD allocator eagerly so triton.set_allocator is not
+        # traced by torch.compile inside triton_scaled_mm.
+        if use_tensor_descriptor() and w_q.device not in _TD_ALLOCATOR_DEVICES:
+            set_triton_allocator(w_q.device)
+            _TD_ALLOCATOR_DEVICES.add(w_q.device)
         w_q_name, w_s_name, i_s_name, i_zp_name, azp_adj_name = self.layer_param_names
 
         replace_parameter(
